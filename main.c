@@ -1,3 +1,5 @@
+#include <iso646.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,8 +55,8 @@ Vec2 get_term_width() {
     ioctl(0, TIOCGWINSZ, &w);
 
     return (Vec2){
-        .x = w.ws_row,
-        .y = w.ws_col
+        .x = w.ws_col,
+        .y = w.ws_row
     };
 }
 #endif
@@ -64,70 +66,194 @@ Vec2 get_term_width() {
 #define HOME CSI"H"
 #define HIDE_CUROSR CSI"?25l"
 #define SHOW_CURSOR CSI"?25h"
-#define COLOR_BG_BLUE CSI"44;97m"
+#define CURSOR_UP(n)   CSI #n "A"
+#define CURSOR_DOWN(n) CSI #n "B"
+#define CURSOR_RIGHT(n) CSI #n "C"
+#define CURSOR_LEFT(n) CSI #n "D"
+
+#define COLOR_BG_BLUE CSI"44m"
+
+#define COLOR_FG_GREEN CSI"32m"
+#define COLOR_FG_GRAY CSI"90m"
+
 #define COLOR_RESET CSI"0m"
 
-
-#define TOGGLE_AUTO_STEP 'a'
-#define STEP 's'
-#define STEP_5 'n'
-#define INCREASE_AUTO_STEP 
-#define DECREASE_AUTO_STEP 
 
 void show_cursor() {
     printf(SHOW_CURSOR);
 }
 
+void handle_sigint(int sig) {
+    disable_raw_mode();
+    show_cursor();
+    printf("\n");
+    exit(0);
+}
+
+#define MIN_WIDTH 48
+#define MIN_HEIGHT 12
+
+#define CELL_WIDTH 6 // `[xxx] `
+#define PADDING_SIDE 16
+
+#define AUTO_PLAY_MIN_MS 50
+#define AUTO_PLAY_MAX_MS 2000
+#define AUTO_PLAY_DEFAULT_MS 300
+#define AUTO_PLAY_STEP_MS 50
+
+static char drawn_output[250] = {0};
+static int drawn_output_pos = 0;
+
 void draw_bf(const char *buf, size_t buf_len, u8 *tape, size_t ip, size_t dp) {
     printf(CLEAR HOME HIDE_CUROSR);
-    Vec2 term_width = get_term_width();
+    Vec2 term = get_term_width();
 
-    int tape_width = term_width.x - 20;
-    int half_window = tape_width / 2;
-
-    size_t start;
-    if (ip < half_window) {
-        start = 0;
-    } else if (ip + half_window >= buf_len) {
-        start = buf_len > tape_width ? buf_len - tape_width : 0;
-    } else {
-        start = ip - half_window;
+    if (term.x < MIN_WIDTH || term.y < MIN_HEIGHT) {
+        fprintf(stderr, "Terminal too small, must be at least: %d:%d\n", MIN_WIDTH, MIN_HEIGHT);
+        exit(1);
     }
 
-    for (size_t i = start; i < buf_len && i < start + tape_width; ++i) {
+    int avail = term.x - 2 * PADDING_SIDE;
+    if (buf_len < avail) avail = buf_len;
+    if (avail < MIN_WIDTH) avail = MIN_WIDTH;
+    int possible_cells = avail / CELL_WIDTH;
+    int missing = avail - possible_cells * CELL_WIDTH;
+
+
+    int true_avail = avail - missing - 1; //- 1 for extra space last cell has padded
+
+    int center = true_avail / 2 + PADDING_SIDE;
+
+    int half = true_avail / 2;
+
+
+    int first_program_instruction;
+    if (ip < true_avail / 2) {
+        first_program_instruction = 0; 
+    }
+    else if ((int)ip + half >= (int)buf_len) {
+        first_program_instruction = (int)buf_len - true_avail;
+        if (first_program_instruction < 0) first_program_instruction = 0;
+    } else {
+        first_program_instruction = ip - true_avail / 2;
+    }
+
+    int last_program_instruction = first_program_instruction + true_avail;
+    int trunc_left_count  = first_program_instruction;
+    int trunc_right_count = (int)buf_len - last_program_instruction;
+
+
+    if (trunc_left_count > 0) {
+        char left_label[PADDING_SIDE];
+        int visible_len = snprintf(NULL, 0, "+%d ", trunc_left_count);
+        snprintf(left_label, sizeof(left_label),COLOR_FG_GRAY "+%d " COLOR_RESET, trunc_left_count);
+        printf("%*s%s", PADDING_SIDE - visible_len, "", left_label);
+    } else {
+        printf("%*s", PADDING_SIDE, "");
+    }
+
+    for (int i = first_program_instruction; i < first_program_instruction + true_avail ; ++i) {
         if (i == ip) {
-            printf(COLOR_BG_BLUE "%c" COLOR_RESET, buf[i]);
+           printf(COLOR_BG_BLUE "%c" COLOR_RESET CURSOR_LEFT(1) CURSOR_DOWN(1) "^" CURSOR_UP(1) , buf[i]);
         } else {
             putchar(buf[i]);
         }
     }
-    printf("\n");
 
-    for (size_t i = start; i < buf_len && i < start + tape_width; ++i) {
-        putchar(i == ip ? '^' : ' ');
+    if (trunc_right_count > 0) {
+        printf(COLOR_FG_GRAY " +%d" COLOR_RESET, trunc_right_count);
     }
-    printf("\n\n");
 
-    printf("\n\n");
+    printf("\n\n\n\n");
 
 
-    for (size_t i = start; i < tape_width; ++i) {
+    int first_cell;
+    if (dp < possible_cells / 2) {
+        first_cell = 0;
+    } else {
+        first_cell = dp - possible_cells / 2;
     }
+
+    printf("%*s", PADDING_SIDE, "");
+    for (int i = first_cell; i < first_cell + possible_cells; ++i) {
+        if (i == dp) {
+            printf(COLOR_BG_BLUE "[%03u]" COLOR_RESET " ", tape[i]);
+        } else {
+            printf("[%03u] ", tape[i]);
+        }
+
+        printf(CURSOR_UP(1) CURSOR_LEFT(5) "%-4d" CURSOR_RIGHT() CURSOR_DOWN(1), i);
+
+        if (32 <= tape[i] && tape[i] <= 126) {
+            printf(COLOR_FG_GREEN CURSOR_DOWN(1) CURSOR_LEFT(4) "%c" CURSOR_RIGHT(3) CURSOR_UP(1) COLOR_RESET, tape[i]);
+        } else {
+            printf(COLOR_FG_GRAY CURSOR_DOWN(1) CURSOR_LEFT(4) "." CURSOR_RIGHT(3) CURSOR_UP(1) COLOR_RESET);
+        }
+    }
+
+    printf("\n\n\n\n");
+
+
+    if (buf[ip] == '.') {
+        drawn_output[drawn_output_pos++] = tape[dp];
+    }
+
+    printf("%*s", PADDING_SIDE, "");
+    printf("┌");
+    for (int i = 0; i < true_avail - 2; ++i)
+        printf("─");
+
+    printf("┐\n");
+    printf("%*s│ ", PADDING_SIDE, "");
+    int box_inner_width = true_avail - 2;
+
+    int col = 0;
+    for (int i = 0; i < drawn_output_pos; ++i) {
+        char c = drawn_output[i];
+        if (c == '\n' || col >= box_inner_width - 1) {
+            printf("%*s│\n", box_inner_width - 1 - col, "");
+            printf("%*s│ ", PADDING_SIDE, "");
+            col = 0;
+            if (c == '\n') continue;
+        }
+        if (32 <= c && c <= 126) {
+            putchar(c);
+        } else {
+            putchar('.');
+        }
+        col++;
+    }
+    printf("%*s│\n", box_inner_width - 1 - col, "");
+    printf("%*s└", PADDING_SIDE, "");
+
+    for (int i = 0; i < true_avail - 2; ++i) printf("─");
+        printf("┘\n");
 
     // PROGRAM
-    // . . .. .. >+++ [ ] etc hightlight current location
+    // IP
+    // <- ... [30] ++++>.
+    //   ^
+    //
+    // TAPE
+    //   12    13
+    // [000] [000]
+    //   ^
+    //   .     .
     //
     //
-    // TAPE [][][][][][][][][][] 
-    // draw cells with value mark current cell
+    // OUTPUT
+    // |--------------
+    // |
+    // |
+    // |
+    // |
+    // |--------------
+    // COMMANDS
     //
-    //
-    // INSTRUCTIONS
-    // a = auto step
-    // s = step
-    // n = step 5
-    // -> increase auto step speed
-    // <- decrease auto step speed
+    // a = toggle auto play
+    // f = faster
+    // s = slower
+    // any other key = manual step
 }
 
 int execute_step(const char *buf, size_t buf_len, u8 *tape, size_t *ip, size_t *dp) {
@@ -185,7 +311,7 @@ int execute_step(const char *buf, size_t buf_len, u8 *tape, size_t *ip, size_t *
             size_t nested = 0;
             do {
                 *ip -= 1;
-                if (ip == 0 && nested != 0 && instruction != '[') {
+                if (*ip == 0 && nested != 0 && instruction != '[') {
                     fprintf(stderr, "%s\n", "Invalid Program\nUnmachteed ']'");
                     return 1;
                 }
@@ -210,6 +336,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    signal(SIGINT, handle_sigint);
     bool visualize = false;
     bool help = false;
 
