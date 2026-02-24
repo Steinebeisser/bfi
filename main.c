@@ -36,15 +36,13 @@ bool enable_raw_mode() {
         return true;
     }
 
-    SetConsoleCtrlHandler(NULL, TRUE);
-
     hIn = GetStdHandle(STD_INPUT_HANDLE);
     if (!GetConsoleMode(hIn, &original_input_mode)) {
         return false;
     }
     DWORD mode = original_input_mode;
 
-    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
     if (!SetConsoleMode(hIn, mode)) {
         return false;
     }
@@ -162,6 +160,7 @@ Vec2 get_term_width() {
 #define CURSOR_DOWN(n) CSI #n "B"
 #define CURSOR_RIGHT(n) CSI #n "C"
 #define CURSOR_LEFT(n) CSI #n "D"
+#define CLEAR_LINE CSI"2K"
 
 #define COLOR_BG_BLUE CSI"44m"
 
@@ -169,6 +168,14 @@ Vec2 get_term_width() {
 #define COLOR_FG_GRAY CSI"90m"
 
 #define COLOR_RESET CSI"0m"
+
+static char frame[1024 * 64];
+
+#define APPEND(...) \
+    frame_len += snprintf(frame + frame_len, \
+                          sizeof(frame) - frame_len, \
+                          __VA_ARGS__)
+size_t frame_len = 0;
 
 
 void show_cursor() {
@@ -197,7 +204,7 @@ static char drawn_output[250] = {0};
 static int drawn_output_pos = 0;
 
 void draw_bf(const char *buf, size_t buf_len, u8 *tape, size_t ip, size_t dp) {
-    printf(CLEAR HOME HIDE_CUROSR);
+    APPEND(HOME HIDE_CUROSR);
     Vec2 term = get_term_width();
 
     if (term.x < MIN_WIDTH || term.y < MIN_HEIGHT) {
@@ -239,24 +246,24 @@ void draw_bf(const char *buf, size_t buf_len, u8 *tape, size_t ip, size_t dp) {
         char left_label[PADDING_SIDE];
         int visible_len = snprintf(NULL, 0, "+%d ", trunc_left_count);
         snprintf(left_label, sizeof(left_label),COLOR_FG_GRAY "+%d " COLOR_RESET, trunc_left_count);
-        printf("%*s%s", PADDING_SIDE - visible_len, "", left_label);
+        APPEND("%*s%s", PADDING_SIDE - visible_len, "", left_label);
     } else {
-        printf("%*s", PADDING_SIDE, "");
+        APPEND("%*s", PADDING_SIDE, "");
     }
 
     for (int i = first_program_instruction; i < first_program_instruction + true_avail ; ++i) {
         if (i == ip) {
-           printf(COLOR_BG_BLUE "%c" COLOR_RESET CURSOR_LEFT(1) CURSOR_DOWN(1) "^" CURSOR_UP(1) , buf[i]);
+           APPEND(COLOR_BG_BLUE "%c" COLOR_RESET CURSOR_LEFT(1) CURSOR_DOWN(1) CLEAR_LINE "^" CURSOR_UP(1) , buf[i]);
         } else {
-            putchar(buf[i]);
+            APPEND("%c", buf[i]);
         }
     }
 
     if (trunc_right_count > 0) {
-        printf(COLOR_FG_GRAY " +%d" COLOR_RESET, trunc_right_count);
+        APPEND(COLOR_FG_GRAY " +%d" COLOR_RESET, trunc_right_count);
     }
 
-    printf("\n\n\n\n");
+    APPEND("\n\n\n\n");
 
 
     int first_cell;
@@ -266,60 +273,64 @@ void draw_bf(const char *buf, size_t buf_len, u8 *tape, size_t ip, size_t dp) {
         first_cell = dp - possible_cells / 2;
     }
 
-    printf("%*s", PADDING_SIDE, "");
+    APPEND("%*s", PADDING_SIDE, "");
     for (int i = first_cell; i < first_cell + possible_cells; ++i) {
         if (i == dp) {
-            printf(COLOR_BG_BLUE "[%03u]" COLOR_RESET " ", tape[i]);
+            APPEND(COLOR_BG_BLUE "[%03u]" COLOR_RESET " ", tape[i]);
         } else {
-            printf("[%03u] ", tape[i]);
+            APPEND("[%03u] ", tape[i]);
         }
 
-        printf(CURSOR_UP(1) CURSOR_LEFT(5) "%-4d" CURSOR_RIGHT() CURSOR_DOWN(1), i);
+        APPEND(CURSOR_UP(1) CURSOR_LEFT(5) "%-4d" CURSOR_RIGHT() CURSOR_DOWN(1), i);
 
         if (32 <= tape[i] && tape[i] <= 126) {
-            printf(COLOR_FG_GREEN CURSOR_DOWN(1) CURSOR_LEFT(4) "%c" CURSOR_RIGHT(3) CURSOR_UP(1) COLOR_RESET, tape[i]);
+            APPEND(COLOR_FG_GREEN CURSOR_DOWN(1) CURSOR_LEFT(4) "%c" CURSOR_RIGHT(3) CURSOR_UP(1) COLOR_RESET, tape[i]);
         } else {
-            printf(COLOR_FG_GRAY CURSOR_DOWN(1) CURSOR_LEFT(4) "." CURSOR_RIGHT(3) CURSOR_UP(1) COLOR_RESET);
+            APPEND(COLOR_FG_GRAY CURSOR_DOWN(1) CURSOR_LEFT(4) "." CURSOR_RIGHT(3) CURSOR_UP(1) COLOR_RESET);
         }
     }
 
-    printf("\n\n\n\n");
+    APPEND("\n\n\n\n");
 
 
     if (buf[ip] == '.') {
         drawn_output[drawn_output_pos++] = tape[dp];
     }
 
-    printf("%*s", PADDING_SIDE, "");
-    printf("┌");
+    APPEND("%*s", PADDING_SIDE, "");
+    APPEND("┌");
     for (int i = 0; i < true_avail - 2; ++i)
-        printf("─");
+        APPEND("─");
 
-    printf("┐\n");
-    printf("%*s│ ", PADDING_SIDE, "");
+    APPEND("┐\n");
+    APPEND("%*s│ ", PADDING_SIDE, "");
     int box_inner_width = true_avail - 2;
 
     int col = 0;
     for (int i = 0; i < drawn_output_pos; ++i) {
         char c = drawn_output[i];
         if (c == '\n' || col >= box_inner_width - 1) {
-            printf("%*s│\n", box_inner_width - 1 - col, "");
-            printf("%*s│ ", PADDING_SIDE, "");
+            APPEND("%*s│\n", box_inner_width - 1 - col, "");
+            APPEND("%*s│ ", PADDING_SIDE, "");
             col = 0;
             if (c == '\n') continue;
         }
         if (32 <= c && c <= 126) {
-            putchar(c);
+            APPEND("%c", c);
         } else {
-            putchar('.');
+            APPEND("%c", '.');
         }
         col++;
     }
-    printf("%*s│\n", box_inner_width - 1 - col, "");
-    printf("%*s└", PADDING_SIDE, "");
+    APPEND("%*s│\n", box_inner_width - 1 - col, "");
+    APPEND("%*s└", PADDING_SIDE, "");
 
-    for (int i = 0; i < true_avail - 2; ++i) printf("─");
-        printf("┘\n");
+    for (int i = 0; i < true_avail - 2; ++i) APPEND("─");
+        APPEND("┘\n");
+
+    fwrite(frame, 1, frame_len, stdout);
+    fflush(stdout);
+    frame_len = 0;
 
     // PROGRAM
     // IP
@@ -445,7 +456,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    FILE *f = fopen(argv[1], "r");
+    FILE *f = fopen(argv[1], "rb");
     if (!f) return 1;
 
     fseek(f, 0, SEEK_END);
